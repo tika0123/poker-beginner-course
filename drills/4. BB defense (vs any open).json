@@ -1,8 +1,8 @@
 {
-  "id": "8df2419a-d4cb-48af-8826-05f66d38a568",
+  "id": "21bf3e00-097f-423b-857a-9828004d738f",
   "query": {
-    "fh_hero": "CO",
-    "fh_actions": "RFI",
+    "fh_hero": "BB",
+    "fh_actions": "vsSRP",
     "fh_start_spot": "preflop",
     "fh_trainer_mode": "stop_after_action",
     "fh_trainer_grouping": "swv_grouping_all",
@@ -73,6 +73,6 @@
     "river_paired": "",
     "river_card": ""
   },
-  "name": "1. open (CO)",
-  "description": " 一番基本的な、誰も参加していないときにどのハンドでオープンするかを練習します。まずは慣れるため、ポジションはカットオフ（CO）に固定します。レンジ表を手元に置きながら、練習してみましょう。"
+  "name": "4. BB defense (vs any open)",
+  "description": "今度はCOだけじゃなくて、どのポジションからのオープンに対しても、適切にディフェンスできるようになりましょう。相手のオープンレンジが広ければ広く守らないといけないですし、逆に相手のオープンレンジが狭ければ自分も強いところだけで守ります。これもレイズとコールが混合しているハンドなどがありますが、まずは（1）絶対に降りないといけないハンドは降りる、(2)絶対にレイズしなければいけないハンドはレイズする、の2点を掴むことを目標に練習してみましょう。"
 }
