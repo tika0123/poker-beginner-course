@@ -7,6 +7,14 @@ type Options = {
   jsonDir: string;
 };
 
+type DrillEntry = {
+  relPath: string;
+  order: number | null;
+  name: string;
+  description: string;
+  url: string;
+};
+
 const DEFAULTS: Options = {
   markdownPath: "preflop_training.md",
   jsonDir: "drills",
@@ -16,15 +24,15 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const repo = getRepoNameFromOrigin();
   const branch = getCurrentBranch();
-  const jsonFiles = await listJsonFiles(options.jsonDir);
-  const original = await readFile(options.markdownPath, "utf8");
-  const updated = updateRoadmapLinks(
-    original,
+  const relativeJsonFiles = await listJsonFiles(options.jsonDir);
+  const drills = await buildDrillEntries(
+    options.jsonDir,
+    relativeJsonFiles,
     repo,
     branch,
-    options.jsonDir,
-    jsonFiles,
   );
+  const original = await readFile(options.markdownPath, "utf8");
+  const updated = updateRoadmapSection(original, drills);
 
   if (original === updated) {
     console.log("No changes.");
@@ -114,35 +122,171 @@ async function walk(rootDir: string, currentDir: string): Promise<string[]> {
     files.push(relPath);
   }
 
-  return files.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  return files;
 }
 
-function updateRoadmapLinks(
-  markdown: string,
-  repo: string,
-  branch: string,
+async function buildDrillEntries(
   jsonDir: string,
   relativeJsonFiles: string[],
-): string {
-  const rows = relativeJsonFiles.map((relFile) => {
-    const fileName = relFile.split("/").at(-1) ?? relFile;
-    const label = fileName.replace(/\.json$/i, "");
-    const repoPath = path.posix.join(toPosixPath(jsonDir), relFile);
-    const url = `https://github.com/${repo}/blob/${branch}/${buildBlobPath(repoPath)}`;
-    return { label, url };
-  });
+  repo: string,
+  branch: string,
+): Promise<DrillEntry[]> {
+  const entries = await Promise.all(
+    relativeJsonFiles.map(async (relPath) => {
+      const absPath = path.join(jsonDir, relPath);
+      const parsed = await parseDrillJson(absPath, relPath);
+      const repoPath = path.posix.join(toPosixPath(jsonDir), relPath);
+      const url = `https://github.com/${repo}/blob/${branch}/${buildBlobPath(repoPath)}`;
 
-  const lines = markdown.split("\n");
+      return {
+        relPath,
+        order: getOrderFromFileName(relPath),
+        name: parsed.name,
+        description: parsed.description,
+        url,
+      } satisfies DrillEntry;
+    }),
+  );
 
-  for (const row of rows) {
-    const matchIndex = lines.findIndex((line) => isTargetLine(line, row.label));
-    if (matchIndex === -1) {
-      continue;
-    }
-    lines[matchIndex] = upsertLinkSuffix(lines[matchIndex], row.url);
+  return entries.sort(compareDrills);
+}
+
+async function parseDrillJson(
+  absPath: string,
+  relPath: string,
+): Promise<{ name: string; description: string }> {
+  let raw: string;
+  try {
+    raw = await readFile(absPath, "utf8");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to read JSON: ${relPath} (${message})`);
   }
 
-  return lines.join("\n");
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid JSON: ${relPath} (${message})`);
+  }
+
+  if (typeof data !== "object" || data === null) {
+    throw new Error(`Invalid drill JSON object: ${relPath}`);
+  }
+
+  const record = data as Record<string, unknown>;
+  const name = record.name;
+  const description = record.description;
+
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw new Error(`Missing or invalid 'name': ${relPath}`);
+  }
+  if (typeof description !== "string" || description.trim().length === 0) {
+    throw new Error(`Missing or invalid 'description': ${relPath}`);
+  }
+
+  return { name, description };
+}
+
+function compareDrills(a: DrillEntry, b: DrillEntry): number {
+  if (a.order !== null && b.order !== null && a.order !== b.order) {
+    return a.order - b.order;
+  }
+  if (a.order !== null && b.order === null) {
+    return -1;
+  }
+  if (a.order === null && b.order !== null) {
+    return 1;
+  }
+  return a.relPath.localeCompare(b.relPath, "en", { numeric: true });
+}
+
+function getOrderFromFileName(relPath: string): number | null {
+  const fileName = relPath.split("/").at(-1) ?? relPath;
+  const match = fileName.match(/^(\d+)/);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const value = Number.parseInt(match[1], 10);
+  return Number.isNaN(value) ? null : value;
+}
+
+function updateRoadmapSection(markdown: string, drills: DrillEntry[]): string {
+  const lines = markdown.split("\n");
+  const headingIndex = lines.findIndex((line) =>
+    line.trim().startsWith("## ロードマップ"),
+  );
+
+  if (headingIndex === -1) {
+    throw new Error("Could not find '## ロードマップ' section.");
+  }
+
+  const nextHeadingIndex = findNextH2(lines, headingIndex + 1);
+  const sectionEnd = nextHeadingIndex === -1 ? lines.length : nextHeadingIndex;
+  const roadmapBody = lines.slice(headingIndex + 1, sectionEnd);
+
+  const preservedPrefix = getPreservedRoadmapPrefix(roadmapBody);
+  const generated = renderRoadmapItems(drills);
+  const nextBody =
+    generated.length === 0
+      ? preservedPrefix
+      : [...preservedPrefix, "", ...generated, ""];
+
+  return [
+    ...lines.slice(0, headingIndex + 1),
+    ...nextBody,
+    ...lines.slice(sectionEnd),
+  ].join("\n");
+}
+
+function findNextH2(lines: string[], from: number): number {
+  for (let i = from; i < lines.length; i += 1) {
+    if (lines[i].trim().startsWith("## ")) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function getPreservedRoadmapPrefix(roadmapBody: string[]): string[] {
+  let quoteCount = 0;
+  for (let i = 0; i < roadmapBody.length; i += 1) {
+    if (roadmapBody[i].trimStart().startsWith(">")) {
+      quoteCount += 1;
+      if (quoteCount === 2) {
+        return roadmapBody.slice(0, i + 1);
+      }
+    }
+  }
+
+  throw new Error("Roadmap section must contain two quote lines to preserve.");
+}
+
+function renderRoadmapItems(drills: DrillEntry[]): string[] {
+  const lines: string[] = [];
+
+  drills.forEach((drill, index) => {
+    const cleanName = stripLeadingNumber(drill.name);
+    lines.push(`${index + 1}.  **${cleanName}** ([link](<${drill.url}>))`);
+    lines.push("");
+    for (const row of drill.description.split("\n")) {
+      lines.push(`    ${row}`);
+    }
+
+    if (index < drills.length - 1) {
+      lines.push("");
+      lines.push("<br>");
+      lines.push("");
+    }
+  });
+
+  return lines;
+}
+
+function stripLeadingNumber(value: string): string {
+  return value.replace(/^\d+\.\s*/, "");
 }
 
 function buildBlobPath(relPath: string): string {
@@ -154,49 +298,6 @@ function buildBlobPath(relPath: string): string {
 
 function toPosixPath(p: string): string {
   return p.split(path.sep).join("/");
-}
-
-function normalizeSpaces(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function lineMatchesLabel(line: string, label: string): boolean {
-  const normalizedLine = normalizeSpaces(line);
-  const normalizedLabel = normalizeSpaces(label);
-  return normalizedLine.includes(normalizedLabel);
-}
-
-function isTargetLine(line: string, label: string): boolean {
-  const trimmed = line.trim();
-  if (trimmed.length === 0) {
-    return false;
-  }
-  if (trimmed.startsWith("<!--")) {
-    return false;
-  }
-  if (trimmed.startsWith(">")) {
-    return false;
-  }
-  if (trimmed.includes("](")) {
-    return false;
-  }
-  return lineMatchesLabel(line, label);
-}
-
-function upsertLinkSuffix(line: string, url: string): string {
-  const suffixRegexes = [
-    /\s*[（(]\s*\[download\]\((?:<[^>]+>|[^)]+)\)\s*[)）]\s*$/i,
-    /\s*[（(]\s*\[link\]\((?:<[^>]+>|[^)]+)\)\s*[)）]\s*$/i,
-    /\s*[（(]\s*download\s*[)）]\s*$/i,
-    /\s*[（(]\s*link\s*[)）]\s*$/i,
-  ];
-
-  let base = line;
-  for (const regex of suffixRegexes) {
-    base = base.replace(regex, "");
-  }
-
-  return `${base} ([link](<${url}>))`;
 }
 
 main().catch((error: unknown) => {
